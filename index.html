@@ -476,37 +476,33 @@ tr:hover td { background: var(--mist); }
 .sc-leg-item { display: flex; align-items: center; gap: 5px; }
 .sc-leg-dot  { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
-/* Tooltip */
-.sc-tooltip {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
+/* Floating tooltip — appended to body to avoid clipping */
+#sc-float-tip {
+  position: fixed;
   background: var(--ink);
   color: white;
-  border-radius: 6px;
-  padding: 8px 10px;
-  font-size: 10px;
-  width: 200px;
-  z-index: 100;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 11px;
+  width: 240px;
+  z-index: 9999;
   pointer-events: none;
-  opacity: 0;
-  transition: opacity .15s;
-  line-height: 1.5;
+  display: none;
+  line-height: 1.55;
+  box-shadow: 0 4px 20px rgba(0,0,0,.25);
 }
-.sc-tooltip::after {
+#sc-float-tip::after {
   content: '';
   position: absolute;
   top: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  border: 5px solid transparent;
+  left: 20px;
+  border: 6px solid transparent;
   border-top-color: var(--ink);
 }
-.sc-node:hover .sc-tooltip { opacity: 1; }
-.sc-tooltip-title { font-weight: 600; margin-bottom: 4px; color: var(--lime); }
-.sc-tooltip-item { padding: 2px 0; border-bottom: 0.5px solid rgba(255,255,255,.1); }
-.sc-tooltip-item:last-child { border-bottom: none; }
+.sc-tip-title { font-weight: 600; margin-bottom: 6px; color: var(--lime); font-size: 11px; }
+.sc-tip-item { padding: 3px 0; border-bottom: 0.5px solid rgba(255,255,255,.12); font-size: 10px; }
+.sc-tip-item:last-child { border-bottom: none; }
+.sc-tip-meta { font-size: 9px; opacity: .65; margin-bottom: 1px; }
 </style>
 </head>
 <body>
@@ -873,12 +869,14 @@ function renderSupplyChain() {
     return r.commodity === cur && (!r.node || r.node === 'Unknown – needs review');
   });
 
-  // Build node HTML
+  // Store alert data for tooltip lookup
+  mapEl._alertsByNode = byNode;
+
+  // Build node HTML — no inline tooltips, use floating tooltip via JS
   mapEl.innerHTML = nodes.map(function(node, idx) {
     var nodeAlerts = byNode[node] || [];
     var count = nodeAlerts.length;
 
-    // Determine badge colour from highest severity alert
     var badgeClass = 'sc-badge-g';
     var hasSerious = nodeAlerts.some(function(a) {
       var s = (a.severity||'').toLowerCase();
@@ -890,44 +888,74 @@ function renderSupplyChain() {
     if (hasSerious) badgeClass = 'sc-badge-r';
     else if (hasInfo) badgeClass = 'sc-badge-a';
 
-    // Box background colour
-    var boxBg = '';
-    var boxBorder = '';
+    var boxBg = '', boxBorder = '';
     if (count > 0) {
       if (badgeClass === 'sc-badge-r') { boxBg = 'background:#FDF0EF;'; boxBorder = 'border-color:#C84040;'; }
       else if (badgeClass === 'sc-badge-a') { boxBg = 'background:#FDF6EC;'; boxBorder = 'border-color:#D4820A;'; }
       else { boxBg = 'background:#EEF6E8;'; boxBorder = 'border-color:#2D6B2D;'; }
     }
 
-    // Tooltip content
-    var tooltipHtml = '';
+    var arrow = idx < nodes.length - 1 ? '<div class="sc-arrow">›</div>' : '';
+
+    // Encode alert data safely into a data attribute
+    var moreCount = count > 6 ? count - 6 : 0;
+    var alertJson = '';
     if (count > 0) {
-      tooltipHtml = '<div class="sc-tooltip"><div class="sc-tooltip-title">' + node + ' · ' + count + ' alert' + (count!==1?'s':'') + '</div>' +
-        nodeAlerts.slice(0,5).map(function(a) {
-          return '<div class="sc-tooltip-item">' +
-            '<span style="font-size:9px;opacity:.7">' + (a.date||'') + ' · ' + (a.hazard||'') + '</span><br>' +
-            a.title.slice(0, 80) + (a.title.length > 80 ? '…' : '') +
-          '</div>';
-        }).join('') +
-        (count > 5 ? '<div style="opacity:.6;margin-top:3px">+ ' + (count-5) + ' more</div>' : '') +
-      '</div>';
+      var alertsArr = nodeAlerts.slice(0,6).map(function(a){
+        return {d:a.date||'', h:a.hazard||'', t:(a.title||'').slice(0,90)};
+      });
+      alertJson = " data-alerts='" + JSON.stringify(alertsArr).replace(/'/g,'&#39;') + "'";
     }
 
-    var arrow = idx < nodes.length - 1
-      ? '<div class="sc-arrow">›</div>'
-      : '';
-
     return '<div class="sc-node-wrap">' +
-      '<div class="sc-node">' +
-        '<div class="sc-box has-alerts" style="' + boxBg + boxBorder + '">' +
+      '<div class="sc-node" data-node="' + node.replace(/"/g,'&quot;') + '" data-count="' + count + '" data-more="' + moreCount + '"' + alertJson + '>' +
+        '<div class="sc-box" style="' + boxBg + boxBorder + '">' +
           (count > 0 ? '<span class="sc-badge ' + badgeClass + '">' + count + '</span>' : '') +
           node +
         '</div>' +
-        tooltipHtml +
       '</div>' +
       arrow +
     '</div>';
   }).join('');
+
+  // Attach mouse events for floating tooltip
+  var tip = document.getElementById('sc-float-tip');
+  mapEl.querySelectorAll('.sc-node[data-count]').forEach(function(el) {
+    var count = parseInt(el.getAttribute('data-count') || '0');
+    if (count === 0) return;
+
+    el.style.cursor = 'pointer';
+
+    el.addEventListener('mouseenter', function(e) {
+      var node   = el.getAttribute('data-node');
+      var more   = parseInt(el.getAttribute('data-more') || '0');
+      var alerts = [];
+      try { var raw = (el.getAttribute('data-alerts') || '[]').replace(/&#39;/g,"'"); alerts = JSON.parse(raw); } catch(err) {}
+
+      var html = '<div class="sc-tip-title">' + node + ' &mdash; ' + count + ' alert' + (count!==1?'s':'') + '</div>';
+      html += alerts.map(function(a) {
+        return '<div class="sc-tip-item"><div class="sc-tip-meta">' + a.d + (a.h ? ' &middot; ' + a.h : '') + '</div>' + a.t + (a.t.length >= 90 ? '&hellip;' : '') + '</div>';
+      }).join('');
+      if (more > 0) html += '<div style="opacity:.55;margin-top:4px;font-size:9px">+ ' + more + ' more alerts</div>';
+
+      tip.innerHTML = html;
+      tip.style.display = 'block';
+      positionTip(e);
+    });
+
+    el.addEventListener('mousemove', function(e) { positionTip(e); });
+    el.addEventListener('mouseleave', function() { tip.style.display = 'none'; });
+  });
+
+  function positionTip(e) {
+    var x = e.clientX + 12;
+    var y = e.clientY - 10;
+    // Keep within viewport
+    if (x + 250 > window.innerWidth) x = e.clientX - 260;
+    if (y + tip.offsetHeight > window.innerHeight) y = e.clientY - tip.offsetHeight - 10;
+    tip.style.left = x + 'px';
+    tip.style.top  = y + 'px';
+  }
 
   // Show unknown count if any
   var subEl = document.getElementById('sc-sub');
@@ -1328,5 +1356,6 @@ document.getElementById('period-slider').addEventListener('input', function() {
 render();
 loadData();
 </script>
+<div id="sc-float-tip"></div>
 </body>
 </html>
